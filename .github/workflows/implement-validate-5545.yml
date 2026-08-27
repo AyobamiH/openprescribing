@@ -110,10 +110,15 @@ jobs:
           git diff --name-only | grep -qx "openprescribing/api/views_spending.py"
           git diff --name-only | grep -qx "openprescribing/frontend/tests/test_api_spending.py"
 
-      - name: Lint
+      - name: Format and lint
         run: |
           pip install -r requirements.dev.txt
+          black openprescribing/api/views_spending.py \
+            openprescribing/frontend/tests/test_api_spending.py
+          isort openprescribing/api/views_spending.py \
+            openprescribing/frontend/tests/test_api_spending.py
           scripts/lint.sh
+          git diff --check
 
       - name: Prove regression against current upstream
         run: |
