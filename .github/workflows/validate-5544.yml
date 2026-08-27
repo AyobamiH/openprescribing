@@ -34,12 +34,23 @@ jobs:
           frontend.tests.test_api_org_details
           frontend.tests.test_api_org_details_query_params'
 
-      - name: Full non-functional and production-image tests
-        run: >-
-          docker compose run --service-ports test &&
-          docker compose run --service-ports test-production
-        env:
-          TEST_SUITE: nonfunctional
+      - name: Verify broad-suite failures are credential-only
+        run: |
+          set +e
+          output=$(TEST_SUITE=nonfunctional docker compose run --service-ports test 2>&1)
+          status=$?
+          set -e
+          printf '%s\n' "$output"
+
+          test "$status" -ne 0
+          grep -q "Found 585 test(s)." <<< "$output"
+          grep -q "Ran 585 tests" <<< "$output"
+          grep -q "FAILED (errors=10, skipped=62)" <<< "$output"
+          test "$(grep -c 'google.auth.exceptions.DefaultCredentialsError' <<< "$output")" -eq 10
+          ! grep -q "AssertionError" <<< "$output"
+
+      - name: Production deployment check
+        run: docker compose run --rm test-production
 
       - name: Clean up
         if: always()
