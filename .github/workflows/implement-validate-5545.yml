@@ -1,0 +1,212 @@
+name: Implement and validate tariff query parameters
+
+on:
+  push:
+    branches:
+      - automation/implement-tariff-5545
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  implement-and-validate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Check out clean feature branch
+        run: |
+          git checkout -B fix/tariff-invalid-query-params-5545 \
+            origin/fix/tariff-invalid-query-params-5545
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Apply endpoint validation and regression coverage
+        run: |
+          python <<'PY'
+          from pathlib import Path
+
+          view_path = Path("openprescribing/api/views_spending.py")
+          view_text = view_path.read_text()
+
+          import_marker = "from . import view_utils as utils\n\n\nclass NotValid"
+          import_replacement = (
+              "from . import view_utils as utils\n\n\n"
+              'ALLOWED_TARIFF_QUERY_PARAMS = {"codes", "format"}\n\n\n'
+              "class NotValid"
+          )
+          assert view_text.count(import_marker) == 1
+          view_text = view_text.replace(import_marker, import_replacement)
+
+          tariff_marker = '''@api_view(["GET"])
+          def tariff(request, format=None):
+              # This view uses raw SQL as we cannot produce the LEFT OUTER JOIN using the
+              # ORM.
+          '''
+          tariff_replacement = '''def _validate_tariff_query_params(query_params):
+              invalid_params = sorted(set(query_params) - ALLOWED_TARIFF_QUERY_PARAMS)
+              if not invalid_params:
+                  return
+
+              if len(invalid_params) == 1:
+                  detail = f"{invalid_params[0]} is not a valid query parameter"
+              else:
+                  detail = f"{', '.join(invalid_params)} are not valid query parameters"
+              raise NotValid(detail)
+
+
+          @api_view(["GET"])
+          def tariff(request, format=None):
+              _validate_tariff_query_params(request.query_params)
+
+              # This view uses raw SQL as we cannot produce the LEFT OUTER JOIN using the
+              # ORM.
+          '''
+          tariff_marker = tariff_marker.replace("          ", "")
+          tariff_replacement = tariff_replacement.replace("          ", "")
+          assert view_text.count(tariff_marker) == 1
+          view_text = view_text.replace(tariff_marker, tariff_replacement)
+          view_path.write_text(view_text)
+
+          test_path = Path("openprescribing/frontend/tests/test_api_spending.py")
+          test_text = test_path.read_text()
+          test_marker = '''    def test_tariff_all(self):
+              url = "/tariff?format=csv"
+              rows = self._rows_from_api(url)
+              self.assertEqual(len(rows), 3)
+
+
+          class TestSpending(ApiTestBase):
+          '''
+          test_replacement = '''    def test_tariff_all(self):
+              url = "/tariff?format=csv"
+              rows = self._rows_from_api(url)
+              self.assertEqual(len(rows), 3)
+
+              def test_tariff_rejects_unknown_query_params(self):
+                  for param in ("name", "code", "unexpected"):
+                      with self.subTest(param=param):
+                          url = self.api_prefix
+                          url += f"/tariff?format=csv&{param}=Gabapentin"
+                          response = self.client.get(url, follow=True)
+
+                          self.assertEqual(response.status_code, 400)
+                          rows = list(
+                              csv.DictReader(response.content.decode("utf8").splitlines())
+                          )
+                          self.assertEqual(
+                              rows[0]["detail"],
+                              f"{param} is not a valid query parameter",
+                          )
+
+              def test_tariff_sorts_multiple_unknown_query_params(self):
+                  url = self.api_prefix
+                  url += "/tariff?format=csv&z=1&name=Gabapentin"
+                  response = self.client.get(url, follow=True)
+
+                  self.assertEqual(response.status_code, 400)
+                  rows = list(
+                      csv.DictReader(response.content.decode("utf8").splitlines())
+                  )
+                  self.assertEqual(
+                      rows[0]["detail"],
+                      "name, z are not valid query parameters",
+                  )
+
+
+          class TestSpending(ApiTestBase):
+          '''
+          test_marker = test_marker.replace("          ", "")
+          test_replacement = test_replacement.replace("          ", "")
+          assert test_text.count(test_marker) == 1
+          test_text = test_text.replace(test_marker, test_replacement)
+          test_path.write_text(test_text)
+          PY
+
+          git diff --check
+          test "$(git diff --name-only | wc -l)" -eq 2
+          git diff --name-only | grep -qx "openprescribing/api/views_spending.py"
+          git diff --name-only | grep -qx "openprescribing/frontend/tests/test_api_spending.py"
+
+      - name: Lint
+        run: |
+          pip install -r requirements.dev.txt
+          scripts/lint.sh
+
+      - name: Prove regression against current upstream
+        run: |
+          rm -rf /tmp/openprescribing-5545-base
+          git worktree add --detach /tmp/openprescribing-5545-base \
+            3fb87c3c2e42f1d410ccc2227438900e4d861a6e
+          cp openprescribing/frontend/tests/test_api_spending.py \
+            /tmp/openprescribing-5545-base/openprescribing/frontend/tests/test_api_spending.py
+
+          cd /tmp/openprescribing-5545-base
+          set +e
+          output=$(COMPOSE_PROJECT_NAME=op5545base docker compose run --rm test \
+            /bin/bash -lc './scripts/docker_setup.sh && cd openprescribing && python manage.py test frontend.tests.test_api_spending.TestAPISpendingViewsTariff.test_tariff_rejects_unknown_query_params frontend.tests.test_api_spending.TestAPISpendingViewsTariff.test_tariff_sorts_multiple_unknown_query_params' 2>&1)
+          status=$?
+          set -e
+          printf '%s\n' "$output"
+
+          test "$status" -ne 0
+          grep -q "200 != 400" <<< "$output"
+          ! grep -q "ImportError" <<< "$output"
+          ! grep -q "ModuleNotFoundError" <<< "$output"
+
+          COMPOSE_PROJECT_NAME=op5545base docker compose down \
+            --volumes --remove-orphans || true
+          cd "$GITHUB_WORKSPACE"
+          git worktree remove --force /tmp/openprescribing-5545-base
+
+      - name: Run tariff endpoint tests
+        run: |
+          COMPOSE_PROJECT_NAME=op5545candidate docker compose run --rm test \
+            /bin/bash -lc './scripts/docker_setup.sh && cd openprescribing && python manage.py test frontend.tests.test_api_spending.TestAPISpendingViewsTariff'
+
+      - name: Verify broad-suite failures are credential-only
+        run: |
+          set +e
+          output=$(TEST_SUITE=nonfunctional \
+            COMPOSE_PROJECT_NAME=op5545candidate \
+            docker compose run --service-ports test 2>&1)
+          status=$?
+          set -e
+          printf '%s\n' "$output"
+
+          test "$status" -ne 0
+          grep -q "Found 599 test(s)." <<< "$output"
+          grep -q "Ran 585 tests" <<< "$output"
+          grep -q "FAILED (errors=10, skipped=62)" <<< "$output"
+          test "$(grep -c 'google.auth.exceptions.DefaultCredentialsError' <<< "$output")" -eq 10
+          ! grep -q "AssertionError" <<< "$output"
+
+      - name: Production deployment check
+        run: |
+          COMPOSE_PROJECT_NAME=op5545candidate \
+            docker compose run --rm test-production
+
+      - name: Commit and push clean contribution
+        run: |
+          git diff --check
+          test "$(git diff --name-only | wc -l)" -eq 2
+          git config user.name "Ayobami Haastrup"
+          git config user.email "47716486+AyobamiH@users.noreply.github.com"
+          git add openprescribing/api/views_spending.py \
+            openprescribing/frontend/tests/test_api_spending.py
+          git commit -m "Reject invalid tariff query parameters"
+          git push origin HEAD:refs/heads/fix/tariff-invalid-query-params-5545
+
+      - name: Clean up containers
+        if: always()
+        run: |
+          COMPOSE_PROJECT_NAME=op5545candidate docker compose down \
+            --volumes --remove-orphans || true
+          COMPOSE_PROJECT_NAME=op5545base docker compose down \
+            --volumes --remove-orphans || true
