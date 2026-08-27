@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 jobs:
-  targeted-validation:
+  candidate-validation:
     runs-on: ubuntu-latest
 
     steps:
@@ -33,6 +33,13 @@ jobs:
           python manage.py test
           frontend.tests.test_api_org_details
           frontend.tests.test_api_org_details_query_params'
+
+      - name: Full non-functional and production-image tests
+        run: >-
+          docker compose run --service-ports test &&
+          docker compose run --service-ports test-production
+        env:
+          TEST_SUITE: nonfunctional
 
       - name: Clean up
         if: always()
