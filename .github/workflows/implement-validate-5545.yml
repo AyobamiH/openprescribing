@@ -44,88 +44,64 @@ jobs:
           assert view_text.count(import_marker) == 1
           view_text = view_text.replace(import_marker, import_replacement)
 
-          tariff_marker = '''@api_view(["GET"])
-          def tariff(request, format=None):
-              # This view uses raw SQL as we cannot produce the LEFT OUTER JOIN using the
-              # ORM.
-          '''
-          tariff_replacement = '''def _validate_tariff_query_params(query_params):
-              invalid_params = sorted(set(query_params) - ALLOWED_TARIFF_QUERY_PARAMS)
-              if not invalid_params:
-                  return
-
-              if len(invalid_params) == 1:
-                  detail = f"{invalid_params[0]} is not a valid query parameter"
-              else:
-                  detail = f"{', '.join(invalid_params)} are not valid query parameters"
-              raise NotValid(detail)
-
-
-          @api_view(["GET"])
-          def tariff(request, format=None):
-              _validate_tariff_query_params(request.query_params)
-
-              # This view uses raw SQL as we cannot produce the LEFT OUTER JOIN using the
-              # ORM.
-          '''
-          tariff_marker = tariff_marker.replace("          ", "")
-          tariff_replacement = tariff_replacement.replace("          ", "")
+          tariff_marker = '@api_view(["GET"])\ndef tariff(request, format=None):\n'
+          tariff_replacement = (
+              "def _validate_tariff_query_params(query_params):\n"
+              "    invalid_params = sorted(\n"
+              "        set(query_params) - ALLOWED_TARIFF_QUERY_PARAMS\n"
+              "    )\n"
+              "    if not invalid_params:\n"
+              "        return\n\n"
+              "    if len(invalid_params) == 1:\n"
+              '        detail = f"{invalid_params[0]} is not a valid query parameter"\n'
+              "    else:\n"
+              '        detail = f"{\', \'.join(invalid_params)} are not valid query parameters"\n'
+              "    raise NotValid(detail)\n\n\n"
+              '@api_view(["GET"])\n'
+              "def tariff(request, format=None):\n"
+              "    _validate_tariff_query_params(request.query_params)\n\n"
+          )
           assert view_text.count(tariff_marker) == 1
           view_text = view_text.replace(tariff_marker, tariff_replacement)
           view_path.write_text(view_text)
 
           test_path = Path("openprescribing/frontend/tests/test_api_spending.py")
           test_text = test_path.read_text()
-          test_marker = '''    def test_tariff_all(self):
-              url = "/tariff?format=csv"
-              rows = self._rows_from_api(url)
-              self.assertEqual(len(rows), 3)
-
-
-          class TestSpending(ApiTestBase):
-          '''
-          test_replacement = '''    def test_tariff_all(self):
-              url = "/tariff?format=csv"
-              rows = self._rows_from_api(url)
-              self.assertEqual(len(rows), 3)
-
-              def test_tariff_rejects_unknown_query_params(self):
-                  for param in ("name", "code", "unexpected"):
-                      with self.subTest(param=param):
-                          url = self.api_prefix
-                          url += f"/tariff?format=csv&{param}=Gabapentin"
-                          response = self.client.get(url, follow=True)
-
-                          self.assertEqual(response.status_code, 400)
-                          rows = list(
-                              csv.DictReader(response.content.decode("utf8").splitlines())
-                          )
-                          self.assertEqual(
-                              rows[0]["detail"],
-                              f"{param} is not a valid query parameter",
-                          )
-
-              def test_tariff_sorts_multiple_unknown_query_params(self):
-                  url = self.api_prefix
-                  url += "/tariff?format=csv&z=1&name=Gabapentin"
-                  response = self.client.get(url, follow=True)
-
-                  self.assertEqual(response.status_code, 400)
-                  rows = list(
-                      csv.DictReader(response.content.decode("utf8").splitlines())
-                  )
-                  self.assertEqual(
-                      rows[0]["detail"],
-                      "name, z are not valid query parameters",
-                  )
-
-
-          class TestSpending(ApiTestBase):
-          '''
-          test_marker = test_marker.replace("          ", "")
-          test_replacement = test_replacement.replace("          ", "")
-          assert test_text.count(test_marker) == 1
-          test_text = test_text.replace(test_marker, test_replacement)
+          class_marker = "\n\nclass TestSpending(ApiTestBase):\n"
+          test_methods = (
+              "\n\n"
+              "    def test_tariff_rejects_unknown_query_params(self):\n"
+              '        for param in ("name", "code", "unexpected"):\n'
+              "            with self.subTest(param=param):\n"
+              "                url = self.api_prefix\n"
+              '                url += f"/tariff?format=csv&{param}=Gabapentin"\n'
+              "                response = self.client.get(url, follow=True)\n\n"
+              "                self.assertEqual(response.status_code, 400)\n"
+              "                rows = list(\n"
+              '                    csv.DictReader(response.content.decode("utf8").splitlines())\n'
+              "                )\n"
+              "                self.assertEqual(\n"
+              '                    rows[0]["detail"],\n'
+              '                    f"{param} is not a valid query parameter",\n'
+              "                )\n\n"
+              "    def test_tariff_sorts_multiple_unknown_query_params(self):\n"
+              "        url = self.api_prefix\n"
+              '        url += "/tariff?format=csv&z=1&name=Gabapentin"\n'
+              "        response = self.client.get(url, follow=True)\n\n"
+              "        self.assertEqual(response.status_code, 400)\n"
+              "        rows = list(\n"
+              '            csv.DictReader(response.content.decode("utf8").splitlines())\n'
+              "        )\n"
+              "        self.assertEqual(\n"
+              '            rows[0]["detail"],\n'
+              '            "name, z are not valid query parameters",\n'
+              "        )"
+          )
+          assert test_text.count(class_marker) == 1
+          test_text = test_text.replace(
+              class_marker,
+              test_methods + class_marker,
+          )
           test_path.write_text(test_text)
           PY
 
