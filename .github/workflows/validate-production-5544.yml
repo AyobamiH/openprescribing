@@ -1,0 +1,24 @@
+name: Validate #5544 production settings
+
+on:
+  push:
+    branches:
+      - validation/org-details-production-5544
+
+permissions:
+  contents: read
+
+jobs:
+  production-check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Production deployment check
+        run: docker compose run --rm test-production
+
+      - name: Clean up
+        if: always()
+        run: docker compose down --volumes
