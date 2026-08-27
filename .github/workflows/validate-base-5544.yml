@@ -1,0 +1,31 @@
+name: Validate #5544 regression against base
+
+on:
+  push:
+    branches:
+      - validation/org-details-base-5544
+
+permissions:
+  contents: read
+
+jobs:
+  base-regression:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Verify candidate regression tests fail on the merge base
+        run: |
+          set +e
+          output=$(docker compose run --rm test /bin/bash -lc './scripts/docker_setup.sh && cd openprescribing && python manage.py test frontend.tests.test_api_org_details_query_params' 2>&1)
+          status=$?
+          set -e
+          printf '%s\n' "$output"
+          test "$status" -ne 0
+          grep -q "200 != 400" <<< "$output"
+
+      - name: Clean up
+        if: always()
+        run: docker compose down --volumes
