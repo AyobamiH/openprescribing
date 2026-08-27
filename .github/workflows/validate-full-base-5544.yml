@@ -25,7 +25,7 @@ jobs:
           printf '%s\n' "$output"
 
           test "$status" -ne 0
-          grep -q "Found 583 test(s)." <<< "$output"
+          grep -q "Found 597 test(s)." <<< "$output"
           grep -q "Ran 583 tests" <<< "$output"
           grep -q "FAILED (errors=10, skipped=62)" <<< "$output"
           test "$(grep -c 'google.auth.exceptions.DefaultCredentialsError' <<< "$output")" -eq 10
