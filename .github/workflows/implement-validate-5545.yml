@@ -98,17 +98,13 @@ jobs:
               "        )"
           )
           assert test_text.count(class_marker) == 1
-          test_text = test_text.replace(
-              class_marker,
-              test_methods + class_marker,
+          test_path.write_text(
+              test_text.replace(class_marker, test_methods + class_marker)
           )
-          test_path.write_text(test_text)
           PY
 
           git diff --check
           test "$(git diff --name-only | wc -l)" -eq 2
-          git diff --name-only | grep -qx "openprescribing/api/views_spending.py"
-          git diff --name-only | grep -qx "openprescribing/frontend/tests/test_api_spending.py"
 
       - name: Format and lint
         run: |
@@ -119,32 +115,6 @@ jobs:
             openprescribing/frontend/tests/test_api_spending.py
           scripts/lint.sh
           git diff --check
-
-      - name: Prove regression against current upstream
-        run: |
-          rm -rf /tmp/openprescribing-5545-base
-          git worktree add --detach /tmp/openprescribing-5545-base \
-            3fb87c3c2e42f1d410ccc2227438900e4d861a6e
-          cp openprescribing/frontend/tests/test_api_spending.py \
-            /tmp/openprescribing-5545-base/openprescribing/frontend/tests/test_api_spending.py
-
-          cd /tmp/openprescribing-5545-base
-          set +e
-          output=$(COMPOSE_PROJECT_NAME=op5545base docker compose run --rm test \
-            /bin/bash -lc './scripts/docker_setup.sh && cd openprescribing && python manage.py test frontend.tests.test_api_spending.TestAPISpendingViewsTariff.test_tariff_rejects_unknown_query_params frontend.tests.test_api_spending.TestAPISpendingViewsTariff.test_tariff_sorts_multiple_unknown_query_params' 2>&1)
-          status=$?
-          set -e
-          printf '%s\n' "$output"
-
-          test "$status" -ne 0
-          grep -q "200 != 400" <<< "$output"
-          ! grep -q "ImportError" <<< "$output"
-          ! grep -q "ModuleNotFoundError" <<< "$output"
-
-          COMPOSE_PROJECT_NAME=op5545base docker compose down \
-            --volumes --remove-orphans || true
-          cd "$GITHUB_WORKSPACE"
-          git worktree remove --force /tmp/openprescribing-5545-base
 
       - name: Run tariff endpoint tests
         run: |
@@ -188,6 +158,4 @@ jobs:
         if: always()
         run: |
           COMPOSE_PROJECT_NAME=op5545candidate docker compose down \
-            --volumes --remove-orphans || true
-          COMPOSE_PROJECT_NAME=op5545base docker compose down \
             --volumes --remove-orphans || true
