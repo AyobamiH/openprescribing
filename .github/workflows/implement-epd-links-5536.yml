@@ -1,0 +1,239 @@
+name: Implement and validate EPD dataset links
+
+on:
+  push:
+    branches:
+      - automation/implement-epd-links-5536
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  implement:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: docs/update-epd-links-5536
+          fetch-depth: 0
+
+      - name: Verify clean starting point
+        run: |
+          test "$(git rev-parse HEAD)" = "3fb87c3c2e42f1d410ccc2227438900e4d861a6e"
+          test -z "$(git status --porcelain)"
+
+      - name: Update retired dataset links
+        run: |
+          python <<'PY'
+          from pathlib import Path
+
+          old = "https://opendata.nhsbsa.net/dataset/english-prescribing-data-epd"
+          new = "https://opendata.nhsbsa.net/dataset/english-prescribing-dataset-epd-with-snomed-code"
+          paths = [
+              Path("openprescribing/templates/index.html"),
+              Path("openprescribing/templates/faq.html"),
+          ]
+
+          for path in paths:
+              text = path.read_text(encoding="utf-8")
+              if text.count(old) != 1:
+                  raise SystemExit(f"Expected exactly one retired URL in {path}")
+              if new in text:
+                  raise SystemExit(f"Replacement URL already exists in {path}")
+              path.write_text(text.replace(old, new, 1), encoding="utf-8")
+          PY
+
+      - name: Verify contribution scope and source alignment
+        run: |
+          expected=$(printf '%s\n' \
+            openprescribing/templates/faq.html \
+            openprescribing/templates/index.html)
+          actual=$(git diff --name-only | sort)
+          test "$actual" = "$(printf '%s\n' "$expected" | sort)"
+          git diff --check
+
+          old='https://opendata.nhsbsa.net/dataset/english-prescribing-data-epd'
+          new='https://opendata.nhsbsa.net/dataset/english-prescribing-dataset-epd-with-snomed-code'
+          test "$(grep -Foc "$new" openprescribing/templates/index.html)" -eq 1
+          test "$(grep -Foc "$new" openprescribing/templates/faq.html)" -eq 1
+          ! grep -Fq "$old" openprescribing/templates/index.html
+          ! grep -Fq "$old" openprescribing/templates/faq.html
+          grep -Fq \
+            'package_show?id=english-prescribing-dataset-epd-with-snomed-code' \
+            openprescribing/pipeline/management/commands/fetch_prescribing_data.py
+
+      - name: Verify NHSBSA dataset endpoint
+        run: |
+          slug='english-prescribing-dataset-epd-with-snomed-code'
+          api="https://opendata.nhsbsa.net/api/3/action/package_show?id=$slug"
+          page="https://opendata.nhsbsa.net/dataset/$slug"
+
+          curl --fail --location --silent --show-error --retry 3 \
+            --output "$RUNNER_TEMP/dataset.json" "$api"
+          DATASET_JSON="$RUNNER_TEMP/dataset.json" python <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          payload = json.loads(Path(os.environ["DATASET_JSON"]).read_text())
+          assert payload["success"] is True
+          result = payload["result"]
+          assert result["name"] == "english-prescribing-dataset-epd-with-snomed-code"
+          assert result["resources"]
+          assert any(resource["name"].startswith("EPD_SNOMED_") for resource in result["resources"])
+          PY
+
+          curl --fail --location --silent --show-error --retry 3 \
+            --output "$RUNNER_TEMP/dataset-page.html" "$page"
+          test -s "$RUNNER_TEMP/dataset-page.html"
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Lint
+        run: |
+          pip install -r requirements.dev.txt
+          scripts/lint.sh
+
+      - name: Render and verify affected templates
+        run: |
+          cat > openprescribing/frontend/tests/test_epd_dataset_links_5536.py <<'PY'
+          from django.template.loader import render_to_string
+          from django.test import SimpleTestCase
+
+          NEW_URL = (
+              "https://opendata.nhsbsa.net/dataset/"
+              "english-prescribing-dataset-epd-with-snomed-code"
+          )
+          OLD_URL = "https://opendata.nhsbsa.net/dataset/english-prescribing-data-epd"
+
+
+          class TestEpdDatasetLinks(SimpleTestCase):
+              def assert_dataset_link(self, template_name):
+                  rendered = render_to_string(template_name, {"news_feed": []})
+                  self.assertIn(f'href="{NEW_URL}"', rendered)
+                  self.assertNotIn(OLD_URL, rendered)
+
+              def test_homepage_dataset_link(self):
+                  self.assert_dataset_link("index.html")
+
+              def test_faq_dataset_link(self):
+                  self.assert_dataset_link("faq.html")
+          PY
+
+          docker compose run --rm test /bin/bash -lc \
+            './scripts/docker_setup.sh && cd openprescribing && python manage.py test frontend.tests.test_epd_dataset_links_5536 frontend.tests.test_views.TestFrontendViews.test_call_view_homepage'
+          rm openprescribing/frontend/tests/test_epd_dataset_links_5536.py
+
+      - name: Prove the retired links exist on current upstream
+        run: |
+          base="$RUNNER_TEMP/openprescribing-5536-base"
+          git worktree add --detach "$base" \
+            3fb87c3c2e42f1d410ccc2227438900e4d861a6e
+
+          old='https://opendata.nhsbsa.net/dataset/english-prescribing-data-epd'
+          new='https://opendata.nhsbsa.net/dataset/english-prescribing-dataset-epd-with-snomed-code'
+          test "$(grep -Foc "$old" "$base/openprescribing/templates/index.html")" -eq 1
+          test "$(grep -Foc "$old" "$base/openprescribing/templates/faq.html")" -eq 1
+          ! grep -Fq "$new" "$base/openprescribing/templates/index.html"
+          ! grep -Fq "$new" "$base/openprescribing/templates/faq.html"
+
+          git worktree remove --force "$base"
+
+      - name: Compare broad non-functional suite with upstream baseline
+        run: |
+          set +e
+          TEST_SUITE=nonfunctional docker compose run --rm test \
+            > "$RUNNER_TEMP/candidate-tests.log" 2>&1
+          candidate_status=$?
+          docker compose down -v >/dev/null 2>&1
+          set -e
+
+          base="$RUNNER_TEMP/openprescribing-5536-baseline"
+          git worktree add --detach "$base" \
+            3fb87c3c2e42f1d410ccc2227438900e4d861a6e
+
+          set +e
+          (
+            cd "$base"
+            TEST_SUITE=nonfunctional docker compose run --rm test
+          ) > "$RUNNER_TEMP/baseline-tests.log" 2>&1
+          baseline_status=$?
+          (
+            cd "$base"
+            docker compose down -v >/dev/null 2>&1
+          )
+          set -e
+
+          CANDIDATE_LOG="$RUNNER_TEMP/candidate-tests.log" \
+          BASELINE_LOG="$RUNNER_TEMP/baseline-tests.log" \
+          CANDIDATE_STATUS="$candidate_status" \
+          BASELINE_STATUS="$baseline_status" \
+          python <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          def metrics(path):
+              text = Path(path).read_text(errors="replace")
+              ran = [int(value) for value in re.findall(r"Ran (\d+) tests", text)]
+              summaries = re.findall(r"FAILED \(([^)]*)\)", text)
+              summary = summaries[-1] if summaries else ""
+
+              def count(name):
+                  match = re.search(rf"{name}=(\d+)", summary)
+                  return int(match.group(1)) if match else 0
+
+              return {
+                  "ran": ran[-1] if ran else None,
+                  "errors": count("errors"),
+                  "failures": count("failures"),
+                  "skipped": count("skipped"),
+                  "credential_errors": text.count(
+                      "google.auth.exceptions.DefaultCredentialsError"
+                  ),
+              }
+
+          candidate = metrics(os.environ["CANDIDATE_LOG"])
+          baseline = metrics(os.environ["BASELINE_LOG"])
+          print("candidate", candidate)
+          print("baseline", baseline)
+
+          assert os.environ["CANDIDATE_STATUS"] == os.environ["BASELINE_STATUS"]
+          assert candidate == baseline
+          assert candidate["failures"] == 0
+          assert candidate["errors"] == 10
+          assert candidate["credential_errors"] >= candidate["errors"]
+          PY
+
+          git worktree remove --force "$base"
+
+      - name: Check production settings
+        run: docker compose run --rm test-production
+
+      - name: Commit and push clean contribution
+        run: |
+          test -z "$(git status --porcelain --untracked-files=no | grep -v '^??')"
+          git config user.name "Ayobami Haastrup"
+          git config user.email "47716486+AyobamiH@users.noreply.github.com"
+          git add \
+            openprescribing/templates/index.html \
+            openprescribing/templates/faq.html
+          git commit \
+            -m "Update English Prescribing Dataset links" \
+            -m "Closes #5536"
+          test "$(git rev-list --count origin/main..HEAD)" -eq 1
+          git push origin HEAD:docs/update-epd-links-5536
+
+      - name: Confirm final state
+        run: |
+          test -z "$(git status --porcelain)"
+          test "$(git rev-list --count origin/main..HEAD)" -eq 1
+          expected=$(printf '%s\n' \
+            openprescribing/templates/faq.html \
+            openprescribing/templates/index.html)
+          actual=$(git diff --name-only origin/main...HEAD | sort)
+          test "$actual" = "$(printf '%s\n' "$expected" | sort)"
