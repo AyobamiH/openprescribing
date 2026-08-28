@@ -1,0 +1,142 @@
+name: Senior audit org_details query contract for issue 5544
+
+on:
+  push:
+    branches:
+      - automation/senior-audit-org-details-query-contract-5544
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v7.0.1
+        with:
+          ref: fix/org-details-invalid-query-params-5544-ready
+          fetch-depth: 0
+
+      - name: Verify exact candidate
+        run: |
+          test "$(git rev-parse HEAD)" = "4a5ee5f7148849a07e0904e893fb1323ba55e7cb"
+          test -z "$(git status --porcelain)"
+
+      - name: Add validation-only contract tests
+        run: |
+          cat > openprescribing/frontend/tests/test_senior_audit_org_details_query_contract.py <<'PY'
+          import csv
+          from unittest.mock import patch
+
+          from .api_test_base import ApiTestBase
+
+
+          class TestSeniorAuditOrgDetailsQueryContract(ApiTestBase):
+              def _url(self, suffix="/", query=""):
+                  return f"{self.api_prefix}/org_details{suffix}{query}"
+
+              @patch("api.views_org_details._get_practice_stats_entries")
+              @patch("api.views_org_details._get_orgs")
+              def test_unknown_json_parameter_stops_before_data_work(
+                  self, get_orgs, get_entries
+              ):
+                  response = self.client.get(
+                      self._url(query="?org_type=pcn&org_code=U81825")
+                  )
+
+                  self.assertEqual(response.status_code, 400)
+                  self.assertEqual(
+                      response.json(),
+                      {"detail": "org_code is not a valid query parameter"},
+                  )
+                  get_orgs.assert_not_called()
+                  get_entries.assert_not_called()
+
+              @patch("api.views_org_details._get_practice_stats_entries")
+              @patch("api.views_org_details._get_orgs")
+              def test_unknown_csv_parameter_stops_before_data_work(
+                  self, get_orgs, get_entries
+              ):
+                  response = self.client.get(
+                      self._url(query="?format=csv&org_type=pcn&q=U81825")
+                  )
+
+                  self.assertEqual(response.status_code, 400)
+                  rows = list(
+                      csv.DictReader(response.content.decode("utf8").splitlines())
+                  )
+                  self.assertEqual(
+                      rows,
+                      [{"detail": "q is not a valid query parameter"}],
+                  )
+                  get_orgs.assert_not_called()
+                  get_entries.assert_not_called()
+
+              @patch("api.views_org_details._get_practice_stats_entries")
+              @patch("api.views_org_details._get_orgs")
+              def test_unknown_parameter_with_csv_suffix_stops_before_data_work(
+                  self, get_orgs, get_entries
+              ):
+                  response = self.client.get(
+                      self._url(suffix=".csv", query="?org_id=U81825")
+                  )
+
+                  self.assertEqual(response.status_code, 400)
+                  rows = list(
+                      csv.DictReader(response.content.decode("utf8").splitlines())
+                  )
+                  self.assertEqual(
+                      rows,
+                      [{"detail": "org_id is not a valid query parameter"}],
+                  )
+                  get_orgs.assert_not_called()
+                  get_entries.assert_not_called()
+
+              @patch("api.views_org_details._get_practice_stats_entries", return_value=[])
+              @patch("api.views_org_details._get_orgs", return_value=[])
+              def test_supported_contract_reaches_data_work(self, get_orgs, get_entries):
+                  response = self.client.get(
+                      self._url(
+                          query=(
+                              "?format=json&org_type=pcn&org=U81825&keys=nothing"
+                          )
+                      )
+                  )
+
+                  self.assertEqual(response.status_code, 200)
+                  self.assertEqual(response.json(), [])
+                  get_orgs.assert_called_once_with("pcn", ["U81825"])
+                  get_entries.assert_called_once_with(["nothing"], "pcn", [])
+
+              @patch("api.views_org_details._get_practice_stats_entries")
+              @patch("api.views_org_details._get_orgs")
+              def test_unknown_renderer_is_rejected_before_data_work(
+                  self, get_orgs, get_entries
+              ):
+                  response = self.client.get(self._url(query="?format=xml"))
+
+                  self.assertEqual(response.status_code, 404)
+                  get_orgs.assert_not_called()
+                  get_entries.assert_not_called()
+          PY
+
+      - name: Run existing and senior contract tests
+        run: |
+          docker compose run --rm test /bin/bash -lc '
+            ./scripts/docker_setup.sh &&
+            cd openprescribing &&
+            python manage.py test \
+              frontend.tests.test_api_org_details \
+              frontend.tests.test_api_org_details_query_params \
+              frontend.tests.test_senior_audit_org_details_query_contract
+          '
+
+      - name: Check lint and candidate cleanliness
+        run: |
+          pip install -r requirements.dev.txt
+          scripts/lint.sh
+          rm openprescribing/frontend/tests/test_senior_audit_org_details_query_contract.py
+          test -z "$(git status --porcelain --untracked-files=no)"
