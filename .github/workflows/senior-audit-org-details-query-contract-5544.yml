@@ -134,9 +134,9 @@ jobs:
               frontend.tests.test_senior_audit_org_details_query_contract
           '
 
-      - name: Check lint and candidate cleanliness
+      - name: Remove validation-only test and lint exact candidate
         run: |
+          rm openprescribing/frontend/tests/test_senior_audit_org_details_query_contract.py
           pip install -r requirements.dev.txt
           scripts/lint.sh
-          rm openprescribing/frontend/tests/test_senior_audit_org_details_query_contract.py
           test -z "$(git status --porcelain --untracked-files=no)"
