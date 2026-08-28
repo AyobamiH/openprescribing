@@ -1,0 +1,51 @@
+name: Validate EPD homepage link issue 5536 v2
+
+on:
+  push:
+    branches:
+      - automation/validate-epd-link-5536-v2
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: docs/update-epd-links-5536
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Verify one-file contribution scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-list --count origin/main..HEAD)" -eq 1
+          test "$(git diff --name-only origin/main...HEAD)" = "openprescribing/templates/index.html"
+          git diff --check origin/main...HEAD
+
+          current='https://opendata.nhsbsa.net/dataset/english-prescribing-dataset-epd-with-snomed-code'
+          retired='https://opendata.nhsbsa.net/dataset/english-prescribing-data-epd'
+
+          test "$(grep -Foc "$current" openprescribing/templates/index.html)" -eq 1
+          test "$(grep -Foc "$retired" openprescribing/templates/index.html)" -eq 0
+          test "$(grep -Foc "$retired" openprescribing/templates/faq.html)" -eq 1
+          test "$(grep -Foc "$current" openprescribing/templates/faq.html)" -eq 0
+
+      - name: Lint
+        run: |
+          pip install -r requirements.dev.txt
+          scripts/lint.sh
+
+      - name: Parse affected templates with Django
+        run: |
+          python manage.py shell -c "from django.template.loader import get_template; get_template('index.html'); get_template('faq.html')"
+
+      - name: Confirm clean tracked state
+        run: test -z "$(git status --porcelain --untracked-files=no)"
