@@ -15,17 +15,19 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: docs/update-epd-links-5536
+          ref: 2e8c7c1b5bb6feb96847ede52f4bae686bd7c368
           fetch-depth: 0
 
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
 
-      - name: Verify one-file contribution scope
+      - name: Verify audited contribution
         shell: bash
         run: |
           set -euo pipefail
+          test "$(git rev-parse HEAD)" = "2e8c7c1b5bb6feb96847ede52f4bae686bd7c368"
+          test "$(git rev-parse origin/main)" = "3fb87c3c2e42f1d410ccc2227438900e4d861a6e"
           test "$(git rev-list --count origin/main..HEAD)" -eq 1
           test "$(git diff --name-only origin/main...HEAD)" = "openprescribing/templates/index.html"
           git diff --check origin/main...HEAD
@@ -35,15 +37,19 @@ jobs:
 
           test "$(grep -Foc "$current" openprescribing/templates/index.html)" -eq 1
           test "$(grep -Foc "$retired" openprescribing/templates/index.html)" -eq 0
+
+          # The FAQ's old-data answer remains outside this homepage issue.
           test "$(grep -Foc "$retired" openprescribing/templates/faq.html)" -eq 1
-          test "$(grep -Foc "$current" openprescribing/templates/faq.html)" -eq 0
+
+          # The public destination matches the dataset package used by the importer.
+          grep -Fq 'package_show?id=english-prescribing-dataset-epd-with-snomed-code'             openprescribing/pipeline/management/commands/fetch_prescribing_data.py
 
       - name: Lint
         run: |
           pip install -r requirements.dev.txt
           scripts/lint.sh
 
-      - name: Parse affected HTML links
+      - name: Parse affected homepage link
         run: |
           python <<'PY'
           from html.parser import HTMLParser
@@ -63,15 +69,11 @@ jobs:
           current = "https://opendata.nhsbsa.net/dataset/english-prescribing-dataset-epd-with-snomed-code"
           retired = "https://opendata.nhsbsa.net/dataset/english-prescribing-data-epd"
 
-          index_parser = LinkParser()
-          index_parser.feed(Path("openprescribing/templates/index.html").read_text(encoding="utf-8"))
-          faq_parser = LinkParser()
-          faq_parser.feed(Path("openprescribing/templates/faq.html").read_text(encoding="utf-8"))
+          parser = LinkParser()
+          parser.feed(Path("openprescribing/templates/index.html").read_text(encoding="utf-8"))
 
-          assert index_parser.hrefs.count(current) == 1
-          assert retired not in index_parser.hrefs
-          assert faq_parser.hrefs.count(retired) == 1
-          assert current not in faq_parser.hrefs
+          assert parser.hrefs.count(current) == 1
+          assert retired not in parser.hrefs
           PY
 
       - name: Confirm clean tracked state
