@@ -43,9 +43,36 @@ jobs:
           pip install -r requirements.dev.txt
           scripts/lint.sh
 
-      - name: Parse affected templates with Django
+      - name: Parse affected HTML links
         run: |
-          python manage.py shell -c "from django.template.loader import get_template; get_template('index.html'); get_template('faq.html')"
+          python <<'PY'
+          from html.parser import HTMLParser
+          from pathlib import Path
+
+          class LinkParser(HTMLParser):
+              def __init__(self):
+                  super().__init__()
+                  self.hrefs = []
+
+              def handle_starttag(self, tag, attrs):
+                  if tag == "a":
+                      href = dict(attrs).get("href")
+                      if href:
+                          self.hrefs.append(href)
+
+          current = "https://opendata.nhsbsa.net/dataset/english-prescribing-dataset-epd-with-snomed-code"
+          retired = "https://opendata.nhsbsa.net/dataset/english-prescribing-data-epd"
+
+          index_parser = LinkParser()
+          index_parser.feed(Path("openprescribing/templates/index.html").read_text(encoding="utf-8"))
+          faq_parser = LinkParser()
+          faq_parser.feed(Path("openprescribing/templates/faq.html").read_text(encoding="utf-8"))
+
+          assert index_parser.hrefs.count(current) == 1
+          assert retired not in index_parser.hrefs
+          assert faq_parser.hrefs.count(retired) == 1
+          assert current not in faq_parser.hrefs
+          PY
 
       - name: Confirm clean tracked state
         run: test -z "$(git status --porcelain --untracked-files=no)"
