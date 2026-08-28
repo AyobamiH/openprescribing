@@ -1,0 +1,131 @@
+name: Senior audit tariff query contract for issue 5545
+
+on:
+  push:
+    branches:
+      - automation/senior-audit-tariff-query-contract-5545
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v7.0.1
+        with:
+          ref: fix/tariff-invalid-query-params-5545
+          fetch-depth: 0
+
+      - name: Verify exact candidate
+        run: |
+          test "$(git rev-parse HEAD)" = "18d5c44d5f37b2feeef92a473f9bde64a56a43ea"
+          test -z "$(git status --porcelain)"
+
+      - name: Add validation-only contract tests
+        run: |
+          cat > openprescribing/frontend/tests/test_senior_audit_tariff_query_contract.py <<'PY'
+          import csv
+          from unittest.mock import patch
+
+          from .api_test_base import ApiTestBase
+
+
+          class TestSeniorAuditTariffQueryContract(ApiTestBase):
+              def _url(self, suffix="/", query=""):
+                  return f"{self.api_prefix}/tariff{suffix}{query}"
+
+              @patch("api.views_spending.utils.execute_query")
+              def test_unknown_json_parameter_stops_before_sql(self, execute_query):
+                  response = self.client.get(self._url(query="?unexpected="))
+
+                  self.assertEqual(response.status_code, 400)
+                  self.assertEqual(
+                      response.json(),
+                      {"detail": "unexpected is not a valid query parameter"},
+                  )
+                  execute_query.assert_not_called()
+
+              @patch("api.views_spending.utils.execute_query")
+              def test_unknown_csv_parameter_stops_before_sql(self, execute_query):
+                  response = self.client.get(
+                      self._url(query="?format=csv&name=Gabapentin")
+                  )
+
+                  self.assertEqual(response.status_code, 400)
+                  rows = list(
+                      csv.DictReader(response.content.decode("utf8").splitlines())
+                  )
+                  self.assertEqual(
+                      rows,
+                      [{"detail": "name is not a valid query parameter"}],
+                  )
+                  execute_query.assert_not_called()
+
+              @patch("api.views_spending.utils.execute_query")
+              def test_unknown_parameter_with_csv_path_suffix_stops_before_sql(
+                  self, execute_query
+              ):
+                  response = self.client.get(
+                      self._url(suffix=".csv", query="?code=0408010G0AAAJAJ")
+                  )
+
+                  self.assertEqual(response.status_code, 400)
+                  rows = list(
+                      csv.DictReader(response.content.decode("utf8").splitlines())
+                  )
+                  self.assertEqual(
+                      rows,
+                      [{"detail": "code is not a valid query parameter"}],
+                  )
+                  execute_query.assert_not_called()
+
+              @patch("api.views_spending.utils.execute_query", return_value=[])
+              def test_full_tariff_request_remains_valid_and_cacheable(
+                  self, execute_query
+              ):
+                  response = self.client.get(self._url())
+
+                  self.assertEqual(response.status_code, 200)
+                  self.assertEqual(response.json(), [])
+                  self.assertEqual(response["cache-control"], "max-age=28800, public")
+                  execute_query.assert_called_once()
+
+              @patch("api.views_spending.utils.execute_query", return_value=[])
+              def test_supported_codes_and_format_remain_valid(self, execute_query):
+                  response = self.client.get(
+                      self._url(query="?format=json&codes=0206020T0AAAGAG")
+                  )
+
+                  self.assertEqual(response.status_code, 200)
+                  self.assertEqual(response.json(), [])
+                  self.assertNotIn("cache-control", response)
+                  execute_query.assert_called_once()
+
+              @patch("api.views_spending.utils.execute_query")
+              def test_unknown_renderer_is_rejected_before_sql(self, execute_query):
+                  response = self.client.get(self._url(query="?format=xml"))
+
+                  self.assertEqual(response.status_code, 404)
+                  execute_query.assert_not_called()
+          PY
+
+      - name: Run existing and senior contract tests
+        run: |
+          docker compose run --rm test /bin/bash -lc '
+            ./scripts/docker_setup.sh &&
+            cd openprescribing &&
+            python manage.py test \
+              frontend.tests.test_api_spending.TestAPISpendingViewsTariff \
+              frontend.tests.test_senior_audit_tariff_query_contract
+          '
+
+      - name: Check lint and candidate cleanliness
+        run: |
+          pip install -r requirements.dev.txt
+          scripts/lint.sh
+          rm openprescribing/frontend/tests/test_senior_audit_tariff_query_contract.py
+          test -z "$(git status --porcelain --untracked-files=no)"
